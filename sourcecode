@@ -1,30 +1,194 @@
 // ==UserScript==
-// @name         鼠标定位
+// @name         鼠标定位增强 - mouse coordinates
 // @namespace    http://tampermonkey.net/
-// @version      0.1
-// @description  try to take over the world!
-// @author       Agiler SU
-// @match       *://*/*
+// @version      0.2
+// @description  显示鼠标坐标（clientX/Y, screenX/Y）及以字符"x"为单位的坐标 x1/y1；支持切换显示、边界自适应与性能优化。
+// @author       Agiler SU (改进)
+// @match        *://*/*
 // @icon         https://www.iconfinder.com/icons/3671817/download/png/512
 // @grant        none
+// @license      MIT
 // ==/UserScript==
 
 (function() {
     'use strict';
-    const coordDiv = document.createElement('div');
-    coordDiv.style.position = 'fixed';
-    coordDiv.style.pointerEvents = 'none';
-    coordDiv.style.background = 'rgba(0,0,0,0.5)';
-    coordDiv.style.color = 'white';
-    coordDiv.style.padding = '2px 5px';
-    coordDiv.style.borderRadius = '3px';
-    coordDiv.style.fontSize = '12px';
-    coordDiv.style.zIndex = '9999';
-    document.body.appendChild(coordDiv);
 
-    document.addEventListener('mousemove', function(e) {
-        coordDiv.textContent = `X: ${e.clientX}, Y: ${e.clientY}`;
-        coordDiv.style.left = (e.clientX + 10) + 'px';
-        coordDiv.style.top = (e.clientY + 10) + 'px';
-    });
+    // 配置（可修改）
+    const CONFIG = {
+        fontSize: 12,                 // 显示与测量的基准字号（px）
+        fontFamily: 'Arial, sans-serif', // 显式设定字体族，保证测量一致性
+        offset: 10,                   // tooltip 相对于鼠标的默认偏移（px）
+        toggleKey: { ctrl: true, key: 'm' } // 切换显示的快捷键 (Ctrl+M)
+    };
+
+    // 等待 document.body 可用（兼容在 head 早期执行的情况）
+    function ensureBodyReady(callback) {
+        if (document.body) {
+            callback();
+            return;
+        }
+        const observer = new MutationObserver(() => {
+            if (document.body) {
+                observer.disconnect();
+                callback();
+            }
+        });
+        observer.observe(document.documentElement, { childList: true, subtree: true });
+    }
+
+    ensureBodyReady(init);
+
+    function init() {
+        // 创建 tooltip
+        const coordDiv = document.createElement('div');
+        coordDiv.style.position = 'fixed';
+        coordDiv.style.pointerEvents = 'none';
+        coordDiv.style.background = 'rgba(0,0,0,0.6)';
+        coordDiv.style.color = 'white';
+        coordDiv.style.padding = '4px 6px';
+        coordDiv.style.borderRadius = '4px';
+        coordDiv.style.fontSize = CONFIG.fontSize + 'px';
+        coordDiv.style.fontFamily = CONFIG.fontFamily;
+        coordDiv.style.lineHeight = '1.2';
+        coordDiv.style.zIndex = '2147483647'; // 尽量放置在最上层
+        coordDiv.style.whiteSpace = 'nowrap';
+        coordDiv.style.boxShadow = '0 1px 4px rgba(0,0,0,0.6)';
+        coordDiv.style.transition = 'opacity 0.08s';
+        coordDiv.style.opacity = '0.95';
+
+        // 隐藏时的样式
+        let visible = true;
+        function show() { coordDiv.style.display = 'block'; visible = true; }
+        function hide() { coordDiv.style.display = 'none'; visible = false; }
+
+        document.body.appendChild(coordDiv);
+
+        // 创建测量 span（放到视口之外，保持可测量）
+        const measureSpan = document.createElement('span');
+        measureSpan.textContent = 'x';
+        measureSpan.style.position = 'absolute';
+        measureSpan.style.left = '-9999px';
+        measureSpan.style.top = '-9999px';
+        measureSpan.style.fontSize = CONFIG.fontSize + 'px';
+        measureSpan.style.fontFamily = CONFIG.fontFamily;
+        // 不使用 visibility:hidden，确保能测量（visibility:hidden 仍能测量，但放到 -9999 更保险）
+        document.body.appendChild(measureSpan);
+
+        // 获取 "x" 的像素宽高（CSS 像素）
+        function measureX() {
+            const rect = measureSpan.getBoundingClientRect();
+            // 兜底：若计算出 0（极罕见），退回 1 避免除零
+            const w = rect.width || 1;
+            const h = rect.height || CONFIG.fontSize || 1;
+            return { w, h };
+        }
+
+        let xMetrics = measureX();
+
+        // 如果页面可能动态改变字体（或用户缩放后想要重新测量），可以监听 resize 或 font changes
+        window.addEventListener('resize', () => {
+            xMetrics = measureX();
+        });
+
+        // 处理鼠标移动，用 rAF 控制更新频率
+        let lastEvent = null;
+        let rafPending = false;
+
+        function updateFromEvent(e) {
+            lastEvent = e;
+            if (!rafPending) {
+                rafPending = true;
+                requestAnimationFrame(() => {
+                    rafPending = false;
+                    if (!lastEvent) return;
+                    renderCoords(lastEvent);
+                    lastEvent = null;
+                });
+            }
+        }
+
+        // 渲染坐标内容并放置 tooltip（包含边界检测）
+        function renderCoords(e) {
+            const clientX = e.clientX;
+            const clientY = e.clientY;
+            const screenX = e.screenX;
+            const screenY = e.screenY;
+
+            // 原始 x1,y1：以 "x" 字符的宽/高为单位（保留两位小数）
+            // 修改点：x1,y1 使用四舍五入取整数			
+            //const x1 = (clientX / xMetrics.w).toFixed(2);
+            //const y1 = (clientY / xMetrics.h).toFixed(2);
+			
+            // 原始 x1,y1：以 "x" 字符的宽/高为单位（保留两位小数）
+            const x1 = Math.round(clientX / xMetrics.w);
+            const y1 = Math.round(clientY / xMetrics.h);			
+			
+
+            // 显示文本（保留原始 X,Y 命名，并加入 Xs,Ys）
+            coordDiv.textContent =
+                `Xb: ${clientX}, Yb: ${clientY} | Xp: ${x1}, Yp: ${y1} | Xs: ${screenX}, Ys: ${screenY}`;
+
+            // 放置 tooltip：优先右下偏移 CONFIG.offset，但若会超出视口则切换到其它方位
+            const vw = window.innerWidth;
+            const vh = window.innerHeight;
+            // 需要先让元素可见并取得尺寸
+            coordDiv.style.display = 'block';
+            const tooltipW = coordDiv.offsetWidth;
+            const tooltipH = coordDiv.offsetHeight;
+
+            let left = clientX + CONFIG.offset;
+            let top = clientY + CONFIG.offset;
+
+            // 如果右侧超出，则放到左侧
+            if (left + tooltipW > vw) {
+                left = clientX - tooltipW - CONFIG.offset;
+            }
+            // 如果顶部超出（底部超出），则放到上方
+            if (top + tooltipH > vh) {
+                top = clientY - tooltipH - CONFIG.offset;
+            }
+            // 兜底，防止负数
+            if (left < 0) left = 2;
+            if (top < 0) top = 2;
+
+            coordDiv.style.left = left + 'px';
+            coordDiv.style.top = top + 'px';
+        }
+
+        // 事件监听
+        function onMouseMove(e) {
+            if (!visible) return;
+            updateFromEvent(e);
+        }
+        document.addEventListener('mousemove', onMouseMove, { passive: true });
+
+        // 快捷键切换显示（默认 Ctrl+M）
+        function onKeyDown(e) {
+            const wantCtrl = !!CONFIG.toggleKey.ctrl;
+            const wantShift = !!CONFIG.toggleKey.shift;
+            const wantAlt = !!CONFIG.toggleKey.alt;
+            const keyMatch = e.key && e.key.toLowerCase() === CONFIG.toggleKey.key.toLowerCase();
+            if (keyMatch && ( (!wantCtrl || e.ctrlKey) && (!wantShift || e.shiftKey) && (!wantAlt || e.altKey) )) {
+                if (visible) hide();
+                else show();
+            }
+        }
+        window.addEventListener('keydown', onKeyDown);
+
+        // 清理函数（在需要时可调用）
+        function destroy() {
+            document.removeEventListener('mousemove', onMouseMove);
+            window.removeEventListener('keydown', onKeyDown);
+            window.removeEventListener('resize', () => { xMetrics = measureX(); });
+            if (coordDiv.parentNode) coordDiv.parentNode.removeChild(coordDiv);
+            if (measureSpan.parentNode) measureSpan.parentNode.removeChild(measureSpan);
+        }
+
+        // 在 pagehide / unload 时尽量清理（虽然页面卸载后资源会被回收）
+        window.addEventListener('pagehide', destroy);
+        window.addEventListener('beforeunload', destroy);
+
+        // 初始显示（可根据需要默认隐藏）
+        show();
+    }
 })();
