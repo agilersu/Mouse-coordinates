@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         鼠标定位增强 - mouse coordinates
-// @namespace    http://tampermonkey.net/
+// @namespace   https://github.com/agilersu/Mouse-coordinates
 // @version      0.2
 // @description  显示鼠标坐标（clientX/Y, screenX/Y）及以字符"x"为单位的坐标 x1/y1；支持切换显示、边界自适应与性能优化。
 // @author       Agiler SU (改进)
